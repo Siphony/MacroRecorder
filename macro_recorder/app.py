@@ -51,6 +51,7 @@ from .win32_automation import (
     WindowManager,
     enable_dpi_awareness,
     format_window,
+    vk_code_to_key,
 )
 
 
@@ -345,6 +346,13 @@ class MacroEditorApp:
         self.last_marker_error: Optional[str] = None
         self.builder_bounds = (0, 0, 0, 0)
         self.stop_button: Optional[ttk.Button] = None
+        self.record_button: Optional[ttk.Button] = None
+        self.stop_recording_button: Optional[ttk.Button] = None
+        self.recording = False
+        self.recording_count = 0
+        self.recording_target_list: Optional[List[MacroBlock]] = None
+        self.recording_insert_index = 0
+        self.recording_indicator_var = tk.StringVar(value="")
 
         self.macro = Macro()
         self.block_item_ids: set[str] = set()
@@ -409,6 +417,10 @@ class MacroEditorApp:
     def _build_toolbar(self) -> None:
         toolbar = ttk.Frame(self.root, padding=(8, 8, 8, 4))
         toolbar.pack(fill="x")
+        action_row = ttk.Frame(toolbar)
+        action_row.pack(fill="x")
+        detail_row = ttk.Frame(toolbar)
+        detail_row.pack(fill="x", pady=(6, 0))
 
         actions = [
             ("New", self.new_macro),
@@ -418,21 +430,33 @@ class MacroEditorApp:
             ("Bind Target", self.open_bind_window),
             ("Run", self.run_macro),
             ("Stop", self.stop_macro),
+            ("Record", self.start_recording),
+            ("Stop Recording", self.stop_recording),
         ]
         for label, command in actions:
-            button = ttk.Button(toolbar, text=label, command=command)
+            button = ttk.Button(action_row, text=label, command=command)
             button.pack(side="left", padx=(0, 6))
             if label == "Stop":
                 self.stop_button = button
+            elif label == "Record":
+                self.record_button = button
+            elif label == "Stop Recording":
+                self.stop_recording_button = button
+                button.state(["disabled"])
 
-        ttk.Label(toolbar, text="Macro").pack(side="left", padx=(16, 4))
+        ttk.Label(detail_row, text="Macro").pack(side="left", padx=(0, 4))
         self.macro_name_var = tk.StringVar()
-        name_entry = ttk.Entry(toolbar, textvariable=self.macro_name_var, width=28)
+        name_entry = ttk.Entry(detail_row, textvariable=self.macro_name_var, width=28)
         name_entry.pack(side="left")
         name_entry.bind("<FocusOut>", lambda _event: self.apply_macro_header())
         name_entry.bind("<Return>", lambda _event: self.apply_macro_header())
 
-        ttk.Label(toolbar, text="Any key or app click stops while running").pack(side="right")
+        ttk.Label(
+            detail_row,
+            textvariable=self.recording_indicator_var,
+            foreground="#B00020",
+        ).pack(side="right", padx=(8, 0))
+        ttk.Label(detail_row, text="Any key or app click stops while running").pack(side="right")
 
     def _build_left_panel(self) -> None:
         ttk.Label(self.left_panel, text="Saved Macros").pack(anchor="w")
@@ -681,7 +705,7 @@ class MacroEditorApp:
 
     def update_target_marker(self) -> None:
         self.marker_update_after_id = None
-        if self.running or not self.marker_enabled_var.get():
+        if self.running or self.recording or not self.marker_enabled_var.get():
             self.marker_overlay.hide()
             self.region_overlay.hide()
             return
@@ -2132,6 +2156,11 @@ class MacroEditorApp:
         self.macro.notes = self.notes_text.get("1.0", tk.END).strip()
 
     def new_macro(self) -> None:
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active", "Stop recording before creating a new macro."
+            )
+            return
         if self.running:
             messagebox.showinfo("Macro Running", "Stop the running macro before creating a new one.")
             return
@@ -2177,6 +2206,11 @@ class MacroEditorApp:
             self.load_macro_path(Path(path))
 
     def load_macro_path(self, path: Path) -> None:
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active", "Stop recording before loading another macro."
+            )
+            return
         if self.running:
             messagebox.showinfo("Macro Running", "Stop the running macro before loading another macro.")
             return
@@ -2206,6 +2240,11 @@ class MacroEditorApp:
         self.show_selected_properties()
 
     def open_bind_window(self) -> None:
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active", "Stop recording before binding another target."
+            )
+            return
         dialog = tk.Toplevel(self.root)
         dialog.title("Bind Target Window")
         dialog.geometry("760x420")
@@ -2342,6 +2381,11 @@ class MacroEditorApp:
         return "break"
 
     def _prepare_macro_run(self) -> bool:
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active", "Stop recording before running a macro."
+            )
+            return False
         if self.running:
             return False
         self.apply_macro_header()
@@ -2375,13 +2419,147 @@ class MacroEditorApp:
     def on_global_stop(self) -> None:
         self.root.after(0, lambda: self.stop_macro("Global emergency hotkey pressed."))
 
-    def on_user_keyboard_input(self, _vk_code: int) -> None:
+    def start_recording(self) -> None:
+        if self.recording:
+            return
+        if self.runner.is_running or self.running:
+            messagebox.showinfo(
+                "Macro Running", "Stop the running macro before recording."
+            )
+            return
+        if not self.macro.target_window:
+            messagebox.showinfo(
+                "No Target", "Bind a target window before recording."
+            )
+            return
+        try:
+            target = self.window_manager.require_ready(
+                self.macro.target_window, self.macro.expected_window_size
+            )
+        except AutomationError as exc:
+            messagebox.showerror("Cannot Start Recording", str(exc))
+            return
+
+        self.apply_macro_header()
+        self.update_builder_bounds()
+        self.recording_target_list, self.recording_insert_index = self._list_for_add_after(
+            self.selected_item_id()
+        )
+        self.recording_count = 0
+        self.recording = True
+        self.hide_target_marker()
+        self.recording_indicator_var.set("Recording...")
+        self.status_var.set(f"Recording input from: {target.title}")
+        if self.record_button:
+            self.record_button.state(["disabled"])
+        if self.stop_recording_button:
+            self.stop_recording_button.state(["!disabled"])
+        self.start_user_override_monitors()
+        self.threadsafe_log(
+            "Recording started. Target-window clicks and foreground target keys "
+            "will be appended as normal macro blocks."
+        )
+
+    def stop_recording(self, reason: str = "Stop Recording clicked.") -> None:
+        if not self.recording:
+            return
+        self.recording = False
+        self.stop_user_override_monitors()
+        self.recording_target_list = None
+        self.recording_indicator_var.set("")
+        if self.record_button:
+            self.record_button.state(["!disabled"])
+        if self.stop_recording_button:
+            self.stop_recording_button.state(["disabled"])
+        self.status_var.set(f"Recording stopped. Added {self.recording_count} blocks.")
+        self.threadsafe_log(
+            f"Recording stopped: {reason} Added {self.recording_count} blocks."
+        )
+        self.schedule_marker_update()
+
+    def _append_recorded_block(self, block: MacroBlock, message: str) -> None:
+        if not self.recording or self.recording_target_list is None:
+            return
+        self.recording_target_list.insert(self.recording_insert_index, block)
+        self.recording_insert_index += 1
+        self.recording_count += 1
+        self.refresh_tree(block.id)
+        self.show_selected_properties()
+        self.status_var.set(message)
+        self.threadsafe_log(message)
+
+    def _record_mouse_click(self, x: int, y: int, button: str) -> None:
+        block = MacroBlock.create("click")
+        block.params.update({"x": int(x), "y": int(y), "button": button, "click_count": 1})
+        self._append_recorded_block(
+            block, f"Recorded {button} click at ({x}, {y})"
+        )
+
+    def _record_keyboard_input(self, key: str) -> None:
+        block = MacroBlock.create("key_press")
+        block.params.update({"key": key, "press_count": 1})
+        self._append_recorded_block(block, f"Recorded key: {key}")
+
+    def _recording_target_error(self, message: str) -> None:
+        if not self.recording:
+            return
+        self.threadsafe_log(f"Recording stopped: {message}")
+        self.stop_recording(message)
+
+    def on_user_keyboard_input(self, vk_code: int) -> None:
+        if self.recording:
+            try:
+                target = self.window_manager.require_ready(
+                    self.macro.target_window, self.macro.expected_window_size
+                )
+                if not self.window_manager.is_foreground(target):
+                    return
+                key = vk_code_to_key(vk_code)
+                if key:
+                    self.root.after(0, lambda value=key: self._record_keyboard_input(value))
+            except AutomationError as exc:
+                self.root.after(
+                    0, lambda message=str(exc): self._recording_target_error(message)
+                )
+            return
         if self.runner.is_running:
             self.root.after(
                 0, lambda: self.stop_macro("User keyboard input detected.")
             )
 
-    def on_user_mouse_click(self, screen_x: int, screen_y: int) -> None:
+    def on_user_mouse_click(
+        self, screen_x: int, screen_y: int, button: str = "left"
+    ) -> None:
+        if self.recording:
+            left, top, right, bottom = self.builder_bounds
+            if left <= screen_x < right and top <= screen_y < bottom:
+                return
+            try:
+                target = self.window_manager.require_ready(
+                    self.macro.target_window, self.macro.expected_window_size
+                )
+                x, y = self.window_manager.screen_to_client(
+                    target, screen_x, screen_y
+                )
+                if target.contains_client_point(x, y):
+                    self.root.after(
+                        0,
+                        lambda rel_x=x, rel_y=y, mouse_button=button: self._record_mouse_click(
+                            rel_x, rel_y, mouse_button
+                        ),
+                    )
+                else:
+                    self.root.after(
+                        0,
+                        lambda: self.threadsafe_log(
+                            "Ignored recording click outside the target window."
+                        ),
+                    )
+            except AutomationError as exc:
+                self.root.after(
+                    0, lambda message=str(exc): self._recording_target_error(message)
+                )
+            return
         if not self.runner.is_running:
             return
         left, top, right, bottom = self.builder_bounds
@@ -2429,8 +2607,12 @@ class MacroEditorApp:
         if running:
             self.hide_target_marker()
             self.start_user_override_monitors()
+            if self.record_button:
+                self.record_button.state(["disabled"])
         else:
             self.stop_user_override_monitors()
+            if self.record_button and not self.recording:
+                self.record_button.state(["!disabled"])
             if self.runner.stop_reason:
                 self.show_stop_notice(self.runner.stop_reason)
         self.status_var.set("Running..." if running else self.status_var.get())
@@ -2440,6 +2622,7 @@ class MacroEditorApp:
 
     def on_close(self) -> None:
         self.closing = True
+        self.recording = False
         if self.marker_update_after_id:
             try:
                 self.root.after_cancel(self.marker_update_after_id)

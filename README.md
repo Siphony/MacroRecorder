@@ -44,6 +44,8 @@ python main.py
 10. Click **Run** to execute the macro.
 11. While a macro is running, press any physical key, click inside the Macro Builder window, click **Stop**, press Escape while the editor is focused, or press **Ctrl+Shift+Q** globally to stop execution.
 
+Use **Record** to append simple target-window clicks and key presses as normal blocks, then click **Stop Recording** when finished.
+
 ## Block Types
 
 - **Click**: clicks at `x, y` relative to the target window client area.
@@ -170,6 +172,20 @@ Child calls share the same runner thread and cancellation event, so Stop, Escape
 Each macro has its own root Label/Goto scope. A child Goto cannot jump into its parent, and a parent Goto cannot jump into a child.
 
 Runtime call-stack tracking prevents direct and indirect recursion. A circular call stops safely and logs a stack such as `Main -> Setup -> Main`. Missing files, invalid JSON, invalid child Label/Goto flow, and child block failures also stop the parent with a visible error reason.
+
+## Simple Input Recording
+
+The main toolbar includes **Record** and **Stop Recording**. While active, a red `Recording...` indicator is shown and captured actions appear live in the macro tree.
+
+Recording appends after the selected block when recording starts. With no selection, actions append to the root macro list. Captured actions are ordinary **Click** and **Key Press** blocks, so they use the existing save/load, copy/paste, and runner behavior.
+
+Only physical left, right, and middle mouse-button presses inside the bound target client area are recorded. Each click is converted using fresh live target-window bounds, so moving the target during recording still produces correct client-relative coordinates. Clicks inside Macro Builder or outside the target are ignored.
+
+Keyboard presses are recorded only while the bound target window is foreground. Common keys, letters, digits, function keys, punctuation, Space, Enter, Tab, Escape, and arrow/navigation keys are supported. Modifier-only Shift, Ctrl, and Alt events are ignored.
+
+Recording and macro execution are mutually exclusive. Starting a run while recording, or starting recording while a macro runs, is refused with a clear message. Recording does not treat intended user input as an emergency stop.
+
+v1.9 does not record mouse movement, dragging, click counts, key combinations, or pauses as Wait blocks. Repeated clicks or keys become separate readable blocks, and waits can be added manually afterward.
 
 ## Layout
 

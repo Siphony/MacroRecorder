@@ -137,6 +137,8 @@ user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
 user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
 user32.RegisterHotKey.restype = wintypes.BOOL
 user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -366,6 +368,9 @@ class WindowManager:
     def set_foreground(self, target: TargetWindowInfo) -> None:
         user32.SetForegroundWindow(target.hwnd)
 
+    def is_foreground(self, target: TargetWindowInfo) -> bool:
+        return int(user32.GetForegroundWindow() or 0) == int(target.hwnd)
+
     def capture_next_click(
         self,
         target_data: Dict[str, Any],
@@ -592,9 +597,13 @@ class UserKeyboardMonitor(_LowLevelHookMonitor):
 
 
 class UserMouseMonitor(_LowLevelHookMonitor):
-    DOWN_MESSAGES = {WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN}
+    DOWN_MESSAGES = {
+        WM_LBUTTONDOWN: "left",
+        WM_RBUTTONDOWN: "right",
+        WM_MBUTTONDOWN: "middle",
+    }
 
-    def __init__(self, callback: Callable[[int, int], None]) -> None:
+    def __init__(self, callback: Callable[[int, int, str], None]) -> None:
         super().__init__(WH_MOUSE_LL)
         self.callback = callback
 
@@ -602,7 +611,11 @@ class UserMouseMonitor(_LowLevelHookMonitor):
         if n_code == HC_ACTION and int(w_param) in self.DOWN_MESSAGES:
             event = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
             if not event.flags & LLMHF_INJECTED:
-                self.callback(int(event.pt.x), int(event.pt.y))
+                self.callback(
+                    int(event.pt.x),
+                    int(event.pt.y),
+                    self.DOWN_MESSAGES[int(w_param)],
+                )
         return user32.CallNextHookEx(self.hook, n_code, w_param, l_param)
 
 
@@ -645,3 +658,44 @@ class GlobalHotkey:
 
 def format_window(info: TargetWindowInfo) -> str:
     return f"{info.title} [{info.client_width}x{info.client_height}]"
+
+
+def vk_code_to_key(vk_code: int) -> Optional[str]:
+    vk = int(vk_code)
+    named = {
+        0x08: "backspace",
+        0x09: "tab",
+        0x0D: "enter",
+        0x1B: "escape",
+        0x20: "space",
+        0x21: "pageup",
+        0x22: "pagedown",
+        0x23: "end",
+        0x24: "home",
+        0x25: "left",
+        0x26: "up",
+        0x27: "right",
+        0x28: "down",
+        0x2D: "insert",
+        0x2E: "delete",
+        0xBA: ";",
+        0xBB: "=",
+        0xBC: ",",
+        0xBD: "-",
+        0xBE: ".",
+        0xBF: "/",
+        0xC0: "`",
+        0xDB: "[",
+        0xDC: "\\",
+        0xDD: "]",
+        0xDE: "'",
+    }
+    if vk in named:
+        return named[vk]
+    if 0x30 <= vk <= 0x39:
+        return chr(vk)
+    if 0x41 <= vk <= 0x5A:
+        return chr(vk).lower()
+    if 0x70 <= vk <= 0x87:
+        return f"f{vk - 0x70 + 1}"
+    return None
