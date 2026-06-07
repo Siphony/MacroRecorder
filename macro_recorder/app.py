@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import threading
 import tkinter as tk
 from ctypes import wintypes
@@ -353,6 +354,9 @@ class MacroEditorApp:
         self.recording_target_list: Optional[List[MacroBlock]] = None
         self.recording_insert_index = 0
         self.recording_indicator_var = tk.StringVar(value="")
+        self.unsaved_indicator_var = tk.StringVar(value="")
+        self._saved_snapshot = ""
+        self.dirty_check_after_id: Optional[str] = None
 
         self.macro = Macro()
         self.block_item_ids: set[str] = set()
@@ -366,9 +370,11 @@ class MacroEditorApp:
         self._build_ui()
         self.refresh_macro_list()
         self.refresh_all()
+        self._mark_clean()
         self.root.bind("<Configure>", self.update_builder_bounds, add="+")
         self.root.bind_all("<MouseWheel>", self._on_properties_mousewheel, add="+")
         self.root.after(100, self.update_builder_bounds)
+        self.dirty_check_after_id = self.root.after(300, self._refresh_dirty_indicator)
         self.root.bind(
             "<Escape>",
             lambda _event: self.stop_macro("Escape key pressed in Macro Builder."),
@@ -456,6 +462,11 @@ class MacroEditorApp:
             textvariable=self.recording_indicator_var,
             foreground="#B00020",
         ).pack(side="right", padx=(8, 0))
+        ttk.Label(
+            detail_row,
+            textvariable=self.unsaved_indicator_var,
+            foreground="#8A1F11",
+        ).pack(side="right", padx=(8, 0))
         ttk.Label(detail_row, text="Any key or app click stops while running").pack(side="right")
 
     def _build_left_panel(self) -> None:
@@ -470,6 +481,14 @@ class MacroEditorApp:
             side="left"
         )
         ttk.Button(button_row, text="Open JSON", command=self.load_from_file).pack(
+            side="left", padx=(6, 0)
+        )
+        order_row = ttk.Frame(self.left_panel)
+        order_row.pack(fill="x", pady=(5, 0))
+        ttk.Button(order_row, text="Move Up", command=lambda: self.move_saved_macro(-1)).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(order_row, text="Move Down", command=lambda: self.move_saved_macro(1)).pack(
             side="left", padx=(6, 0)
         )
 
@@ -631,11 +650,88 @@ class MacroEditorApp:
         self.refresh_tree()
         self.show_selected_properties()
 
-    def refresh_macro_list(self) -> None:
+    def _current_macro_snapshot(self) -> str:
+        data = self.macro.to_dict()
+        try:
+            data["name"] = self.macro_name_var.get().strip() or "Untitled Macro"
+            data["notes"] = self.notes_text.get("1.0", tk.END).strip()
+        except (AttributeError, tk.TclError):
+            pass
+        return json.dumps(data, sort_keys=True, separators=(",", ":"))
+
+    def is_dirty(self) -> bool:
+        return self._current_macro_snapshot() != self._saved_snapshot
+
+    def _mark_clean(self) -> None:
+        self._saved_snapshot = self._current_macro_snapshot()
+        self.unsaved_indicator_var.set("")
+
+    def _refresh_dirty_indicator(self) -> None:
+        if self.closing:
+            return
+        self.unsaved_indicator_var.set("Unsaved changes" if self.is_dirty() else "")
+        self.dirty_check_after_id = self.root.after(300, self._refresh_dirty_indicator)
+
+    def _confirm_safe_transition(self, action: str) -> bool:
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active",
+                f"Stop recording before {action}.",
+            )
+            return False
+        if self.runner.is_running or self.running:
+            messagebox.showinfo(
+                "Macro Running",
+                f"Stop the running macro before {action}.",
+            )
+            return False
+        if not self.is_dirty():
+            return True
+        answer = messagebox.askyesnocancel(
+            "Unsaved Changes",
+            f"You have unsaved changes. Would you like to save before {action}?",
+        )
+        if answer is None:
+            return False
+        if answer is False:
+            return True
+        return self._save_for_transition()
+
+    def _save_for_transition(self) -> bool:
+        return self.save_macro() if self.macro.path else self.save_macro_as()
+
+    def refresh_macro_list(self, select_path: Optional[Path | str] = None) -> None:
+        selected_identity = (
+            self.storage.reference_identity(select_path) if select_path else None
+        )
         self.macro_paths = self.storage.list_macros()
         self.macro_list.delete(0, tk.END)
-        for path in self.macro_paths:
+        selected_index = None
+        for index, path in enumerate(self.macro_paths):
             self.macro_list.insert(tk.END, path.stem)
+            if (
+                selected_identity
+                and self.storage.reference_identity(path) == selected_identity
+            ):
+                selected_index = index
+        if selected_index is not None:
+            self.macro_list.selection_set(selected_index)
+            self.macro_list.see(selected_index)
+
+    def move_saved_macro(self, delta: int) -> None:
+        selection = self.macro_list.curselection()
+        if not selection:
+            return
+        path = self.macro_paths[selection[0]]
+        try:
+            new_index = self.storage.move_macro(path, delta)
+            self.refresh_macro_list(path)
+            self.macro_list.selection_clear(0, tk.END)
+            self.macro_list.selection_set(new_index)
+            self.macro_list.see(new_index)
+            self.status_var.set(f"Moved saved macro: {path.stem}")
+        except Exception as exc:
+            messagebox.showerror("Move Saved Macro Failed", str(exc))
 
     def update_builder_bounds(self, _event: Optional[tk.Event] = None) -> None:
         try:
@@ -2156,25 +2252,28 @@ class MacroEditorApp:
         self.macro.notes = self.notes_text.get("1.0", tk.END).strip()
 
     def new_macro(self) -> None:
-        if self.recording:
-            messagebox.showinfo(
-                "Recording Active", "Stop recording before creating a new macro."
-            )
-            return
-        if self.running:
-            messagebox.showinfo("Macro Running", "Stop the running macro before creating a new one.")
+        if not self._confirm_safe_transition("creating a new macro"):
             return
         self.macro = Macro()
         self.refresh_all()
+        self.macro_list.selection_clear(0, tk.END)
+        self._mark_clean()
 
-    def save_macro(self) -> None:
-        self.apply_macro_header()
-        self._report_control_flow_warnings()
-        path = self.storage.save(self.macro)
-        self.threadsafe_log(f"Saved macro to {path}")
-        self.refresh_macro_list()
+    def save_macro(self) -> bool:
+        try:
+            self.apply_macro_header()
+            self._report_control_flow_warnings()
+            path = self.storage.save(self.macro)
+            self.threadsafe_log(f"Saved macro to {path}")
+            self.refresh_macro_list(path)
+            self._mark_clean()
+            return True
+        except Exception as exc:
+            self.threadsafe_log(f"Save failed: {exc}")
+            messagebox.showerror("Save Failed", str(exc))
+            return False
 
-    def save_macro_as(self) -> None:
+    def save_macro_as(self) -> bool:
         self.apply_macro_header()
         self._report_control_flow_warnings()
         path = filedialog.asksaveasfilename(
@@ -2183,10 +2282,18 @@ class MacroEditorApp:
             defaultextension=".json",
             filetypes=[("Macro JSON", "*.json"), ("All files", "*.*")],
         )
-        if path:
+        if not path:
+            return False
+        try:
             saved = self.storage.save(self.macro, path)
             self.threadsafe_log(f"Saved macro to {saved}")
-            self.refresh_macro_list()
+            self.refresh_macro_list(saved)
+            self._mark_clean()
+            return True
+        except Exception as exc:
+            self.threadsafe_log(f"Save failed: {exc}")
+            messagebox.showerror("Save Failed", str(exc))
+            return False
 
     def load_selected_macro(self) -> None:
         selection = self.macro_list.curselection()
@@ -2206,21 +2313,21 @@ class MacroEditorApp:
             self.load_macro_path(Path(path))
 
     def load_macro_path(self, path: Path) -> None:
-        if self.recording:
-            messagebox.showinfo(
-                "Recording Active", "Stop recording before loading another macro."
-            )
-            return
-        if self.running:
-            messagebox.showinfo("Macro Running", "Stop the running macro before loading another macro.")
+        if not self._confirm_safe_transition("switching macros"):
+            if self.macro.path:
+                self.refresh_macro_list(self.macro.path)
             return
         try:
             self.macro = self.storage.load(path)
             self.threadsafe_log(f"Loaded macro from {path}")
             self.refresh_all()
+            self.refresh_macro_list(path)
+            self._mark_clean()
             self._report_control_flow_warnings()
         except Exception as exc:
             messagebox.showerror("Load Failed", str(exc))
+            if self.macro.path:
+                self.refresh_macro_list(self.macro.path)
 
     def browse_saved_macro(self, block: MacroBlock) -> None:
         path = filedialog.askopenfilename(
@@ -2401,7 +2508,18 @@ class MacroEditorApp:
             self.threadsafe_log(f"Control-flow validation failed:\n{message}")
             messagebox.showerror("Invalid Label/Goto Control Flow", message)
             return False
+        if not self._save_before_run():
+            return False
         return True
+
+    def _save_before_run(self) -> bool:
+        if not self.macro.path:
+            messagebox.showinfo(
+                "Save Required",
+                "Save this new macro before running it.",
+            )
+            return self.save_macro_as()
+        return self.save_macro()
 
     def _report_control_flow_warnings(self) -> None:
         errors = control_flow_errors(self.macro)
@@ -2621,8 +2739,16 @@ class MacroEditorApp:
             self.schedule_marker_update()
 
     def on_close(self) -> None:
+        if not self._confirm_safe_transition("closing"):
+            return
         self.closing = True
         self.recording = False
+        if self.dirty_check_after_id:
+            try:
+                self.root.after_cancel(self.dirty_check_after_id)
+            except tk.TclError:
+                pass
+            self.dirty_check_after_id = None
         if self.marker_update_after_id:
             try:
                 self.root.after_cancel(self.marker_update_after_id)

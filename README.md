@@ -187,6 +187,16 @@ Recording and macro execution are mutually exclusive. Starting a run while recor
 
 v1.9 does not record mouse movement, dragging, click counts, key combinations, or pauses as Wait blocks. Repeated clicks or keys become separate readable blocks, and waits can be added manually afterward.
 
+## Saved Macro Ordering And Save Safety
+
+The Saved Macros panel includes **Move Up** and **Move Down** controls. Manual order is stored separately in `macros/macro_order.json`; macro JSON files are not modified when the list is reordered. New or previously unlisted macro files appear after the ordered entries. Missing order entries are ignored, and missing/corrupt metadata safely falls back to alphabetical discovery.
+
+The editor compares the current macro against the last saved/loaded snapshot. Block additions, deletion, reordering, property edits, recording, target binding, macro name, notes, Run Saved Macro references, labels, and other macro-content changes therefore produce an **Unsaved changes** indicator.
+
+Before creating/loading another macro or closing the app, unsaved work prompts for **Save**, **Don't Save**, or **Cancel**. Save continues only after a successful write; Cancel keeps the current macro open. Running or recording must be stopped before switching or closing.
+
+**Run** and **Run From Here** always save the current macro before execution. A macro that has never been saved opens Save As first. Canceling Save As or encountering a save error prevents execution, ensuring called macros and the on-disk parent reflect the run being started.
+
 ## Layout
 
 The app opens at up to `1600x900`, constrained to the available screen size. Macro editing controls are split across compact rows so they remain accessible in narrower panes. The selected-block properties panel scrolls vertically with its scrollbar or mouse wheel, keeping long region-detection forms and probe controls reachable.
