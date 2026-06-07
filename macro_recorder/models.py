@@ -35,12 +35,12 @@ BLOCK_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "y": 0,
         "button": "left",
         "click_count": 1,
-        "delay_after_ms": 100,
+        "delay_after_ms": 300,
     },
     "key_press": {
         "key": "space",
         "press_count": 1,
-        "delay_after_ms": 100,
+        "delay_after_ms": 300,
     },
     "wait": {
         "duration_ms": 500,
