@@ -483,6 +483,42 @@ class InputController:
             user32.mouse_event(up_flag, 0, 0, 0, 0)
             time.sleep(0.05)
 
+    def move_mouse(
+        self,
+        target: TargetWindowInfo,
+        x: int,
+        y: int,
+        duration_ms: int = 150,
+        stop_check: Optional[Callable[[], None]] = None,
+    ) -> None:
+        screen_x, screen_y = self.window_manager.client_to_screen(target, int(x), int(y))
+        duration_seconds = max(0, int(duration_ms)) / 1000
+        point = POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            raise AutomationError("Could not read the current mouse position.")
+
+        start_x = int(point.x)
+        start_y = int(point.y)
+        if duration_seconds <= 0:
+            if stop_check:
+                stop_check()
+            if not user32.SetCursorPos(screen_x, screen_y):
+                raise AutomationError("Could not move the mouse cursor.")
+            return
+
+        started = time.monotonic()
+        while True:
+            if stop_check:
+                stop_check()
+            progress = min(1.0, (time.monotonic() - started) / duration_seconds)
+            current_x = round(start_x + (screen_x - start_x) * progress)
+            current_y = round(start_y + (screen_y - start_y) * progress)
+            if not user32.SetCursorPos(current_x, current_y):
+                raise AutomationError("Could not move the mouse cursor.")
+            if progress >= 1.0:
+                return
+            time.sleep(min(0.01, duration_seconds * (1.0 - progress)))
+
     def key_press(self, target: TargetWindowInfo, key: str, press_count: int = 1) -> None:
         vk, modifiers = self._key_to_vk(key)
         self.window_manager.set_foreground(target)

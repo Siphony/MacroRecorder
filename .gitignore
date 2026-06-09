@@ -21,6 +21,7 @@ Thumbs.db
 # Project-specific
 debug_captures/
 macros/
+macro_backups/
 *.log
 *.tmp
 *.bak

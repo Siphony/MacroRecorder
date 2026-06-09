@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 
 import numpy as np
 
 from macro_recorder.change_detection import compare_bgr_frames
 from macro_recorder.models import Macro, MacroBlock
 from macro_recorder.runner import MacroRunner, MacroStopped
-from macro_recorder.storage import MacroStorage
 from macro_recorder.vision_backend import CapturedFrame
 from macro_recorder.win32_automation import AutomationError, TargetWindowInfo
 
@@ -155,17 +153,23 @@ class RegionChangeTests(unittest.TestCase):
         self.assertEqual(len(runner.input.clicks), 2)
 
     def test_existing_macro_loads_with_zero_after_success_delay(self) -> None:
-        path = Path("macros/Easy_Odyssey_1.json")
-        macro = MacroStorage().load(path)
+        macro = Macro.from_dict(
+            {
+                "blocks": [
+                    {"type": "wait_pixel", "params": {"x": 1, "y": 2}},
+                    {
+                        "type": "wait_region",
+                        "params": {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+                    },
+                ]
+            }
+        )
 
-        wait_blocks = [
-            block
-            for block in macro.all_blocks()
-            if block.type in {"wait_pixel", "wait_region"}
-        ]
-        self.assertTrue(wait_blocks)
         self.assertTrue(
-            all(block.params.get("after_success_delay_ms") == 0 for block in wait_blocks)
+            all(
+                block.params.get("after_success_delay_ms") == 0
+                for block in macro.blocks
+            )
         )
 
     def test_new_blocks_round_trip_and_success_delay_is_responsive(self) -> None:

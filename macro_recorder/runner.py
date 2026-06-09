@@ -202,6 +202,36 @@ class MacroRunner:
             self._delay_after(params)
             return
 
+        if block.type == "move_mouse":
+            target = self._target(macro)
+            x = int(params.get("x", 0))
+            y = int(params.get("y", 0))
+            duration_ms = max(0, int(params.get("movement_duration_ms", 150) or 0))
+            self.log(f"[MoveMouse] Moving to ({x}, {y}) over {duration_ms} ms")
+            self.input_controller.move_mouse(
+                target, x, y, duration_ms, stop_check=self._check_stop
+            )
+            return
+
+        if block.type == "move_and_click":
+            target = self._target(macro)
+            x = int(params.get("x", 0))
+            y = int(params.get("y", 0))
+            button = str(params.get("button", "left"))
+            click_count = int(params.get("click_count", 1))
+            duration_ms = max(0, int(params.get("movement_duration_ms", 150) or 0))
+            self.log(
+                f"[MoveAndClick] Moving to ({x}, {y}) over {duration_ms} ms, "
+                f"then {button} click x{click_count}"
+            )
+            self.input_controller.move_mouse(
+                target, x, y, duration_ms, stop_check=self._check_stop
+            )
+            self._check_stop()
+            self.input_controller.click(target, x, y, button, click_count)
+            self._delay_after(params)
+            return
+
         if block.type == "key_press":
             target = self._target(macro)
             self.input_controller.key_press(

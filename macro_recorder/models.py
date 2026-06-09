@@ -37,6 +37,19 @@ BLOCK_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "click_count": 1,
         "delay_after_ms": 300,
     },
+    "move_mouse": {
+        "x": 0,
+        "y": 0,
+        "movement_duration_ms": 150,
+    },
+    "move_and_click": {
+        "x": 0,
+        "y": 0,
+        "button": "left",
+        "click_count": 1,
+        "movement_duration_ms": 150,
+        "delay_after_ms": 300,
+    },
     "key_press": {
         "key": "space",
         "press_count": 1,
@@ -149,6 +162,8 @@ BLOCK_DEFAULTS: Dict[str, Dict[str, Any]] = {
 
 BLOCK_LABELS: Dict[str, str] = {
     "click": "Click",
+    "move_mouse": "Move Mouse",
+    "move_and_click": "Move And Click",
     "key_press": "Key Press",
     "wait": "Wait",
     "wait_pixel": "Wait For Pixel Match",
@@ -318,6 +333,17 @@ def block_summary(block: MacroBlock) -> str:
         return (
             f"{p.get('button', 'left')} click x={p.get('x', 0)}, "
             f"y={p.get('y', 0)} x{p.get('click_count', 1)}"
+        )
+    if block.type == "move_mouse":
+        return (
+            f"move to x={p.get('x', 0)}, y={p.get('y', 0)} "
+            f"over {p.get('movement_duration_ms', 150)} ms"
+        )
+    if block.type == "move_and_click":
+        return (
+            f"move to x={p.get('x', 0)}, y={p.get('y', 0)} "
+            f"over {p.get('movement_duration_ms', 150)} ms, then "
+            f"{p.get('button', 'left')} click x{p.get('click_count', 1)}"
         )
     if block.type == "key_press":
         return f"press {p.get('key', '')} x{p.get('press_count', 1)}"

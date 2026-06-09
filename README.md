@@ -49,6 +49,8 @@ Use **Record** to append simple target-window clicks and key presses as normal b
 ## Block Types
 
 - **Click**: clicks at `x, y` relative to the target window client area.
+- **Move Mouse**: moves from the current cursor position to client-relative `x, y` over a configurable duration without clicking.
+- **Move And Click**: moves to client-relative `x, y`, then performs the normal configured mouse click and delay.
 - **Key Press**: focuses the target window and presses a key one or more times.
 - **Wait**: waits a fixed number of milliseconds.
 - **Wait For Pixel Match**: polls a target-relative pixel until it matches the expected colour within tolerance or times out.
@@ -69,7 +71,11 @@ Pixel colours use `#RRGGBB`. Tolerance is per-channel, so a tolerance of `10` me
 
 Coordinates are relative to the target window client/content area, not the outer window frame. Crosshair display, click execution, pixel capture, pixel probes, Wait For Pixel Match, and If Pixel Match all resolve coordinates through the same client-to-screen conversion path.
 
-When a Click, Wait For Pixel Match, or If Pixel Match block is selected, the app shows a small red marker over the bound target window at that block's relative coordinate. The marker uses the same target-window coordinate conversion as macro execution and updates as you edit `x` or `y`. The marker overlay is click-through, so it should not block interaction with the target application.
+When a Click, Move Mouse, Move And Click, Wait For Pixel Match, or If Pixel Match block is selected, the app shows a small red marker over the bound target window at that block's relative coordinate. The marker uses the same target-window coordinate conversion as macro execution and updates as you edit `x` or `y`. The marker overlay is click-through, so it should not block interaction with the target application.
+
+Move durations are measured in milliseconds and default to `150`. A duration of `0` moves instantly. Movement begins at the current desktop cursor position and checks the macro stop signal throughout timed movement. The simple recorder continues to create ordinary Click blocks.
+
+For v1.9.2, `python tools/convert_strategy_clicks_v192.py` backs up every `*_Defla.json` and `*_Impop.json` strategy macro under `macro_backups/v1.9.2_click_to_move_click/`, then recursively converts only plain Click blocks to Move And Click with a `150` ms movement duration. The tool refuses to run if that backup destination already exists.
 
 The target panel includes **Show target marker while editing**. Turn it off if the overlay is distracting.
 

@@ -865,11 +865,18 @@ class MacroEditorApp:
         if len(selected_units) != 1:
             return None
         block = selected_units[0]
-        return block if block.type in {"click", "wait_pixel", "if_pixel"} else None
+        return (
+            block
+            if block.type
+            in {"click", "move_mouse", "move_and_click", "wait_pixel", "if_pixel"}
+            else None
+        )
 
     def _block_uses_coordinates(self, block: MacroBlock) -> bool:
         return block.type in {
             "click",
+            "move_mouse",
+            "move_and_click",
             "wait_pixel",
             "if_pixel",
             "wait_region",
@@ -1378,6 +1385,44 @@ class MacroEditorApp:
                 command=lambda: self.capture_click(block),
             ).pack(anchor="w", pady=(8, 0))
             self._probe_controls(block)
+        elif block.type == "move_mouse":
+            self._field("Target X", "x", block.params.get("x", 0))
+            self._field("Target Y", "y", block.params.get("y", 0))
+            self._field(
+                "Movement Duration (ms)",
+                "movement_duration_ms",
+                block.params.get("movement_duration_ms", 150),
+            )
+            ttk.Button(
+                self.properties_frame,
+                text="Capture Target Position",
+                command=lambda: self.capture_click(block),
+            ).pack(anchor="w", pady=(8, 0))
+        elif block.type == "move_and_click":
+            self._field("Target X", "x", block.params.get("x", 0))
+            self._field("Target Y", "y", block.params.get("y", 0))
+            self._choice(
+                "Button",
+                "button",
+                block.params.get("button", "left"),
+                ["left", "right", "middle"],
+            )
+            self._field("Click Count", "click_count", block.params.get("click_count", 1))
+            self._field(
+                "Movement Duration (ms)",
+                "movement_duration_ms",
+                block.params.get("movement_duration_ms", 150),
+            )
+            self._field(
+                "Delay After (ms)",
+                "delay_after_ms",
+                block.params.get("delay_after_ms", 0),
+            )
+            ttk.Button(
+                self.properties_frame,
+                text="Capture Target Position",
+                command=lambda: self.capture_click(block),
+            ).pack(anchor="w", pady=(8, 0))
         elif block.type == "key_press":
             self._field("Key", "key", block.params.get("key", "space"))
             self._field("Press Count", "press_count", block.params.get("press_count", 1))
@@ -1932,6 +1977,7 @@ class MacroEditorApp:
             "click_count",
             "press_count",
             "delay_after_ms",
+            "movement_duration_ms",
             "after_success_delay_ms",
             "duration_ms",
             "tolerance",
