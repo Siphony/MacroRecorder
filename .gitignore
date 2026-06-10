@@ -19,9 +19,10 @@ env/
 Thumbs.db
 
 # Project-specific
-debug_captures/
-macros/
-macro_backups/
+debug_captures/*
+macros/*
+macro_backups/*
+references/*
 *.log
 *.tmp
 *.bak
