@@ -2,6 +2,7 @@
 
 __all__ = [
     "app",
+    "map_classification",
     "models",
     "runner",
     "storage",

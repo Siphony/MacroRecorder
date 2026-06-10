@@ -6,9 +6,16 @@ import threading
 import tkinter as tk
 from ctypes import wintypes
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
+from .map_classification import (
+    MapClassificationError,
+    classify_map_patch,
+    format_classification_log,
+    normalize_map_id,
+    save_map_reference,
+)
 from .models import (
     BLOCK_LABELS,
     PIXEL_SAMPLING_MODES,
@@ -883,6 +890,7 @@ class MacroEditorApp:
             "if_region",
             "wait_stable",
             "click_until_change",
+            "classify_map_run",
         }
 
     def _region_marker_block(self) -> Optional[MacroBlock]:
@@ -893,7 +901,13 @@ class MacroEditorApp:
         return (
             block
             if block.type
-            in {"wait_region", "if_region", "wait_stable", "click_until_change"}
+            in {
+                "wait_region",
+                "if_region",
+                "wait_stable",
+                "click_until_change",
+                "classify_map_run",
+            }
             else None
         )
 
@@ -1519,6 +1533,8 @@ class MacroEditorApp:
                 ),
                 wraplength=390,
             ).pack(anchor="w", fill="x", pady=(6, 0))
+        elif block.type == "classify_map_run":
+            self._classify_map_fields(block)
         elif block.type == "stop":
             ttk.Label(self.properties_frame, text="This block stops macro execution.").pack(anchor="w")
 
@@ -1602,6 +1618,151 @@ class MacroEditorApp:
             textvariable=self.probe_result_var,
             wraplength=340,
         ).pack(anchor="w", fill="x", pady=(4, 0))
+
+    def _section_label(self, text: str) -> None:
+        ttk.Separator(self.properties_frame, orient="horizontal").pack(
+            fill="x", pady=(12, 5)
+        )
+        ttk.Label(
+            self.properties_frame, text=text, font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w")
+
+    def _boolean_field(self, text: str, key: str, value: Any) -> tk.BooleanVar:
+        enabled = (
+            value
+            if isinstance(value, bool)
+            else str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        var = tk.BooleanVar(value=enabled)
+        ttk.Checkbutton(
+            self.properties_frame,
+            text=text,
+            variable=var,
+        ).pack(anchor="w", pady=(5, 0))
+        self.property_vars[key] = var
+        return var
+
+    def _classify_map_fields(self, block: MacroBlock) -> None:
+        self._section_label("Runtime Patch")
+        self._region_coordinate_fields(block)
+        self._region_capture_buttons(block)
+        ttk.Button(
+            self.properties_frame,
+            text="Probe Classification Now",
+            command=lambda: self.probe_map_classification(block),
+        ).pack(anchor="w", pady=(7, 0))
+
+        self._section_label("Reference Capture")
+        self._field(
+            "Reference X1",
+            "reference_x1",
+            block.params.get("reference_x1", 0),
+        )
+        self._field(
+            "Reference Y1",
+            "reference_y1",
+            block.params.get("reference_y1", 0),
+        )
+        self._field(
+            "Reference X2",
+            "reference_x2",
+            block.params.get("reference_x2", 240),
+        )
+        self._field(
+            "Reference Y2",
+            "reference_y2",
+            block.params.get("reference_y2", 160),
+        )
+        self._region_capture_buttons(block, prefix="reference_")
+        self._field(
+            "Reference Folder",
+            "reference_folder",
+            block.params.get("reference_folder", "references/maps/expert"),
+        )
+        reference_buttons = ttk.Frame(self.properties_frame)
+        reference_buttons.pack(fill="x", pady=(7, 0))
+        ttk.Button(
+            reference_buttons,
+            text="Browse Folder",
+            command=lambda: self.browse_reference_folder(block),
+        ).pack(side="left")
+        ttk.Button(
+            reference_buttons,
+            text="Capture Reference Image",
+            command=lambda: self.capture_map_reference(block),
+        ).pack(side="left", padx=(6, 0))
+
+        self._section_label("Matching")
+        self._field(
+            "Minimum Best Score",
+            "minimum_best_score",
+            block.params.get("minimum_best_score", 0.75),
+        )
+        self._field(
+            "Minimum Score Margin",
+            "minimum_score_margin",
+            block.params.get("minimum_score_margin", 0.05),
+        )
+        self._boolean_field(
+            "Enable multi-scale matching",
+            "enable_multi_scale",
+            block.params.get("enable_multi_scale", True),
+        )
+        self._field("Scale Min", "scale_min", block.params.get("scale_min", 0.90))
+        self._field("Scale Max", "scale_max", block.params.get("scale_max", 1.10))
+        self._field("Scale Step", "scale_step", block.params.get("scale_step", 0.05))
+        ttk.Label(
+            self.properties_frame,
+            text=(
+                "Scores use OpenCV normalized correlation: 1.0 is an essentially "
+                "identical patch. Both score and runner-up margin must pass."
+            ),
+            wraplength=340,
+        ).pack(anchor="w", fill="x", pady=(5, 0))
+
+        self._section_label("Map Macro Mapping")
+        mapping = block.params.get("map_macro_mapping")
+        mapping_count = len(mapping) if isinstance(mapping, dict) else 0
+        ttk.Label(
+            self.properties_frame,
+            text=f"{mapping_count} map-to-macro mapping(s) configured.",
+        ).pack(anchor="w", fill="x")
+        ttk.Button(
+            self.properties_frame,
+            text="Edit Map Macro Mapping",
+            command=lambda: self.edit_map_macro_mapping(block),
+        ).pack(anchor="w", pady=(6, 0))
+
+        self._section_label("Click Before Run")
+        self._boolean_field(
+            "Click map slot before running mapped macro",
+            "click_before_run",
+            block.params.get("click_before_run", True),
+        )
+        self._field("Map Click X", "map_click_x", block.params.get("map_click_x", 0))
+        self._field("Map Click Y", "map_click_y", block.params.get("map_click_y", 0))
+        self._field(
+            "Movement Duration (ms)",
+            "movement_duration_ms",
+            block.params.get("movement_duration_ms", 150),
+        )
+        self._field(
+            "Post-click Delay (ms)",
+            "post_click_delay_ms",
+            block.params.get("post_click_delay_ms", 500),
+        )
+        ttk.Button(
+            self.properties_frame,
+            text="Capture Map Click Position",
+            command=lambda: self.capture_click(
+                block, x_key="map_click_x", y_key="map_click_y"
+            ),
+        ).pack(anchor="w", pady=(7, 0))
+        ttk.Label(
+            self.properties_frame,
+            textvariable=self.probe_result_var,
+            wraplength=340,
+        ).pack(anchor="w", fill="x", pady=(7, 0))
 
     def _region_fields(self, block: MacroBlock, include_wait: bool) -> None:
         self._field("X1", "x1", block.params.get("x1", 0))
@@ -1796,18 +1957,18 @@ class MacroEditorApp:
         self._field("X2", "x2", block.params.get("x2", 100))
         self._field("Y2", "y2", block.params.get("y2", 50))
 
-    def _region_capture_buttons(self, block: MacroBlock) -> None:
+    def _region_capture_buttons(self, block: MacroBlock, prefix: str = "") -> None:
         buttons = ttk.Frame(self.properties_frame)
         buttons.pack(fill="x", pady=(8, 0))
         ttk.Button(
             buttons,
             text="Capture First Corner",
-            command=lambda: self.capture_region_corner(block, "first"),
+            command=lambda: self.capture_region_corner(block, "first", prefix),
         ).pack(side="left")
         ttk.Button(
             buttons,
             text="Capture Second Corner",
-            command=lambda: self.capture_region_corner(block, "second"),
+            command=lambda: self.capture_region_corner(block, "second", prefix),
         ).pack(side="left", padx=(6, 0))
 
     def _choice(self, label: str, key: str, value: Any, options: List[str]) -> tk.StringVar:
@@ -1856,6 +2017,15 @@ class MacroEditorApp:
                 return f"Warning: goto target label '{target}' does not exist."
         if block.type == "run_macro":
             return self._run_macro_reference_warning(block)
+        if block.type == "classify_map_run":
+            reference = str(block.params.get("reference_folder", "") or "").strip()
+            if not reference:
+                return "Warning: select a map reference folder."
+            if not self.storage.resolve_reference(reference).is_dir():
+                return f"Warning: map reference folder is missing: {reference}"
+            mapping = block.params.get("map_macro_mapping")
+            if not isinstance(mapping, dict) or not mapping:
+                return "Warning: configure at least one map-to-macro mapping."
         return ""
 
     def _run_macro_reference_warning(self, block: MacroBlock) -> str:
@@ -1965,8 +2135,12 @@ class MacroEditorApp:
             return None, f"Goto target label '{target}' does not exist yet."
         return None, None
 
-    def _coerce_param(self, key: str, value: str) -> Any:
-        value = value.strip()
+    def _coerce_param(self, key: str, value: Any) -> Any:
+        if key in {"click_before_run", "enable_multi_scale"}:
+            if isinstance(value, bool):
+                return value
+            return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+        value = str(value).strip()
         int_keys = {
             "x",
             "y",
@@ -1992,6 +2166,12 @@ class MacroEditorApp:
             "green_strength",
             "minimum_green",
             "sample_step",
+            "reference_x1",
+            "reference_y1",
+            "reference_x2",
+            "reference_y2",
+            "map_click_x",
+            "map_click_y",
         }
         if key == "timeout_ms":
             return "" if value == "" else max(0, int(value))
@@ -2005,6 +2185,14 @@ class MacroEditorApp:
             return max(0, min(179, int(float(value))))
         if key in {"hsv_min_saturation", "hsv_min_value"}:
             return max(0, min(255, int(float(value))))
+        if key == "minimum_best_score":
+            return max(-1.0, min(1.0, float(value)))
+        if key == "minimum_score_margin":
+            return max(0.0, min(2.0, float(value)))
+        if key in {"scale_min", "scale_max"}:
+            return max(0.05, min(4.0, float(value)))
+        if key == "scale_step":
+            return max(0.01, min(1.0, float(value)))
         if key in int_keys:
             return max(0, int(value))
         if key == "expected_color":
@@ -2019,7 +2207,7 @@ class MacroEditorApp:
             return normalize_sampling_mode(value)
         if key == "detection_mode":
             return normalize_region_detection_mode(value)
-        if key == "macro_path":
+        if key in {"macro_path", "reference_folder"}:
             return value
         return value
 
@@ -2177,13 +2365,17 @@ class MacroEditorApp:
             "Coordinate convention: target client/content area"
         )
 
-    def capture_region_corner(self, block: MacroBlock, corner: str) -> None:
+    def capture_region_corner(
+        self, block: MacroBlock, corner: str, prefix: str = ""
+    ) -> None:
         self.apply_block_properties()
         if not self.macro.target_window:
             messagebox.showinfo("No Target", "Bind a target window before capturing a region.")
             return
+        region_name = "reference capture region" if prefix else "runtime region"
         self.threadsafe_log(
-            f"Region corner capture armed ({corner}). Click inside the target window within 15 seconds."
+            f"{region_name.title()} corner capture armed ({corner}). "
+            "Click inside the target window within 15 seconds."
         )
 
         def worker() -> None:
@@ -2194,12 +2386,12 @@ class MacroEditorApp:
                     timeout_seconds=15,
                 )
                 if corner == "first":
-                    block.params["x1"] = x
-                    block.params["y1"] = y
+                    block.params[f"{prefix}x1"] = x
+                    block.params[f"{prefix}y1"] = y
                 else:
-                    block.params["x2"] = x
-                    block.params["y2"] = y
-                message = f"Captured {corner} region corner x={x}, y={y}"
+                    block.params[f"{prefix}x2"] = x
+                    block.params[f"{prefix}y2"] = y
+                message = f"Captured {corner} {region_name} corner x={x}, y={y}"
                 self.root.after(0, lambda: self._after_region_capture(block, message))
             except Exception as exc:
                 error = str(exc)
@@ -2292,6 +2484,166 @@ class MacroEditorApp:
             "Capture backend: MSS -> BGRA -> OpenCV BGR/RGB/HSV\n"
             "Coordinate convention: target client/content area"
         )
+
+    def probe_map_classification(self, block: MacroBlock) -> None:
+        if not self.macro.target_window:
+            messagebox.showinfo(
+                "No Target", "Bind a target window before probing classification."
+            )
+            return
+        params = self.draft_block_params(block)
+        self.hide_target_marker()
+        self.root.update_idletasks()
+        self.root.after(
+            50, lambda: self._finish_map_classification_probe(block, params)
+        )
+
+    def _finish_map_classification_probe(
+        self, block: MacroBlock, params: Dict[str, Any]
+    ) -> None:
+        try:
+            target = self.window_manager.require_ready(
+                self.macro.target_window, self.macro.expected_window_size
+            )
+            region = normalize_region(
+                params.get("x1", 0),
+                params.get("y1", 0),
+                params.get("x2", 0),
+                params.get("y2", 0),
+            )
+            capture = self.screen_analysis.capture_target_region(target, *region)
+            reference_value = str(params.get("reference_folder", "") or "").strip()
+            if not reference_value:
+                raise MapClassificationError("No reference folder is configured.")
+            folder = self.storage.resolve_reference(reference_value)
+            result = classify_map_patch(
+                capture.bgr,
+                folder,
+                enable_multi_scale=bool(params.get("enable_multi_scale", True)),
+                scale_min=float(params.get("scale_min", 0.90)),
+                scale_max=float(params.get("scale_max", 1.10)),
+                scale_step=float(params.get("scale_step", 0.05)),
+            )
+            minimum_best = float(params.get("minimum_best_score", 0.75))
+            minimum_margin = float(params.get("minimum_score_margin", 0.05))
+            outcome = (
+                result.best.map_id
+                if result.passes(minimum_best, minimum_margin) and result.best
+                else "low_confidence"
+            )
+            self.last_probe_capture = capture
+            self.last_probe_label = f"{self.macro.name}_classify_map_runtime"
+            self.last_probe_result = outcome
+            saved = self.screen_analysis.save_debug_capture(
+                capture, self.last_probe_label, outcome
+            )
+            log = format_classification_log(
+                result,
+                heading="ClassifyMapProbe",
+                reference_folder=folder,
+                region=region,
+                minimum_best_score=minimum_best,
+                minimum_margin=minimum_margin,
+            )
+            self.threadsafe_log(
+                log + f"\nSaved Runtime Patch: {saved or 'disabled'}"
+            )
+            best_text = result.best.map_id if result.best else "none"
+            verdict = (
+                "PASS"
+                if result.passes(minimum_best, minimum_margin)
+                else "LOW CONFIDENCE"
+            )
+            best_score = result.best.score if result.best else -1.0
+            self.probe_result_var.set(
+                f"Last probe: {best_text} score={best_score:.4f}, "
+                f"margin={result.margin:.4f} - {verdict}"
+            )
+        except Exception as exc:
+            self.threadsafe_log(f"[ClassifyMapProbe] Error: {exc}")
+            self.probe_result_var.set(f"Probe failed: {exc}")
+        finally:
+            self.schedule_marker_update()
+
+    def browse_reference_folder(self, block: MacroBlock) -> None:
+        self.apply_block_properties()
+        current = self.storage.resolve_reference(
+            str(block.params.get("reference_folder", "") or "references/maps/expert")
+        )
+        path = filedialog.askdirectory(
+            title="Select Map Reference Folder",
+            initialdir=str(current if current.exists() else self.storage.project_dir),
+        )
+        if not path:
+            return
+        block.params["reference_folder"] = self.storage.to_reference(path)
+        self.threadsafe_log(
+            f"Selected map reference folder: {block.params['reference_folder']}"
+        )
+        self.refresh_tree(block.id)
+        self.block_tree.selection_set(block.id)
+        self.show_selected_properties()
+
+    def capture_map_reference(self, block: MacroBlock) -> None:
+        self.apply_block_properties()
+        if not self.macro.target_window:
+            messagebox.showinfo(
+                "No Target", "Bind a target window before capturing a reference."
+            )
+            return
+        map_id = simpledialog.askstring(
+            "Map Reference",
+            "Map ID for the new reference image:",
+            parent=self.root,
+        )
+        if map_id is None:
+            return
+        map_id = normalize_map_id(map_id)
+        if not map_id:
+            messagebox.showerror("Invalid Map ID", "Map ID cannot be empty.")
+            return
+        params = dict(block.params)
+        self.hide_target_marker()
+        self.root.update_idletasks()
+
+        def worker() -> None:
+            try:
+                target = self.window_manager.require_ready(
+                    self.macro.target_window, self.macro.expected_window_size
+                )
+                region = normalize_region(
+                    params.get("reference_x1", params.get("x1", 0)),
+                    params.get("reference_y1", params.get("y1", 0)),
+                    params.get("reference_x2", params.get("x2", 0)),
+                    params.get("reference_y2", params.get("y2", 0)),
+                )
+                capture = self.screen_analysis.capture_target_region(target, *region)
+                reference_value = str(
+                    params.get("reference_folder", "") or ""
+                ).strip()
+                if not reference_value:
+                    raise MapClassificationError("No reference folder is configured.")
+                folder = self.storage.resolve_reference(reference_value)
+                path = save_map_reference(capture.bgr, folder, map_id)
+                message = (
+                    f"[MapReferenceCapture]\nMap ID: {map_id}\n"
+                    f"Region: left={region[0]} top={region[1]} "
+                    f"right={region[2]} bottom={region[3]}\nSaved: {path}"
+                )
+                self.root.after(0, lambda: self._after_map_reference_capture(message))
+            except Exception as exc:
+                error = str(exc)
+                self.root.after(
+                    0, lambda: messagebox.showerror("Reference Capture Failed", error)
+                )
+                self.root.after(0, self.schedule_marker_update)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_map_reference_capture(self, message: str) -> None:
+        self.threadsafe_log(message)
+        self.status_var.set("Map reference image saved.")
+        self.schedule_marker_update()
 
     def apply_macro_header(self) -> None:
         self.macro.name = self.macro_name_var.get().strip() or "Untitled Macro"
@@ -2392,6 +2744,120 @@ class MacroEditorApp:
         self.block_tree.focus(block.id)
         self.show_selected_properties()
 
+    def edit_map_macro_mapping(self, block: MacroBlock) -> None:
+        self.apply_block_properties()
+        existing = block.params.get("map_macro_mapping") or {}
+        mapping = (
+            {str(key): str(value) for key, value in existing.items()}
+            if isinstance(existing, dict)
+            else {}
+        )
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Map To Macro Mapping")
+        dialog.geometry("760x460")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tree = ttk.Treeview(
+            dialog,
+            columns=("map_id", "macro_path"),
+            show="headings",
+            selectmode="browse",
+        )
+        tree.heading("map_id", text="Map ID")
+        tree.heading("macro_path", text="Saved Macro")
+        tree.column("map_id", width=180, stretch=False)
+        tree.column("macro_path", width=520)
+        tree.pack(fill="both", expand=True, padx=8, pady=(8, 6))
+
+        editor = ttk.Frame(dialog)
+        editor.pack(fill="x", padx=8)
+        map_id_var = tk.StringVar()
+        macro_path_var = tk.StringVar()
+        ttk.Label(editor, text="Map ID", width=12).grid(row=0, column=0, sticky="w")
+        ttk.Entry(editor, textvariable=map_id_var).grid(
+            row=0, column=1, sticky="ew", padx=(0, 6)
+        )
+        ttk.Label(editor, text="Macro", width=12).grid(row=1, column=0, sticky="w")
+        ttk.Entry(editor, textvariable=macro_path_var).grid(
+            row=1, column=1, sticky="ew", padx=(0, 6), pady=(5, 0)
+        )
+        editor.columnconfigure(1, weight=1)
+
+        def refresh() -> None:
+            tree.delete(*tree.get_children(""))
+            for map_id in sorted(mapping, key=str.casefold):
+                tree.insert("", "end", iid=map_id, values=(map_id, mapping[map_id]))
+
+        def choose_macro() -> None:
+            path = filedialog.askopenfilename(
+                title="Select Saved Macro",
+                initialdir=str(self.storage.base_dir.resolve()),
+                filetypes=[("Macro JSON", "*.json"), ("All files", "*.*")],
+                parent=dialog,
+            )
+            if path:
+                macro_path_var.set(self.storage.to_reference(path))
+
+        def add_or_update() -> None:
+            map_id = normalize_map_id(map_id_var.get())
+            macro_path = macro_path_var.get().strip()
+            if not map_id or not macro_path:
+                messagebox.showerror(
+                    "Invalid Mapping",
+                    "Provide both a map ID and saved macro path.",
+                    parent=dialog,
+                )
+                return
+            mapping[map_id] = macro_path
+            refresh()
+            tree.selection_set(map_id)
+
+        def remove() -> None:
+            selection = tree.selection()
+            if selection:
+                mapping.pop(selection[0], None)
+                refresh()
+
+        def on_select(_event=None) -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            map_id = selection[0]
+            map_id_var.set(map_id)
+            macro_path_var.set(mapping[map_id])
+
+        def apply_mapping() -> None:
+            block.params["map_macro_mapping"] = dict(mapping)
+            self.threadsafe_log(
+                f"Updated map-to-macro mapping: {len(mapping)} entry/entries."
+            )
+            self.refresh_tree(block.id)
+            self.block_tree.selection_set(block.id)
+            self.show_selected_properties()
+            dialog.destroy()
+
+        actions = ttk.Frame(dialog)
+        actions.pack(fill="x", padx=8, pady=(6, 8))
+        ttk.Button(editor, text="Browse", command=choose_macro).grid(
+            row=1, column=2, sticky="ew", pady=(5, 0)
+        )
+        ttk.Button(actions, text="Add / Update", command=add_or_update).pack(
+            side="left"
+        )
+        ttk.Button(actions, text="Remove", command=remove).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(actions, text="Apply Mapping", command=apply_mapping).pack(
+            side="right"
+        )
+        ttk.Button(actions, text="Cancel", command=dialog.destroy).pack(
+            side="right", padx=(0, 6)
+        )
+        tree.bind("<<TreeviewSelect>>", on_select)
+        refresh()
+
     def open_bind_window(self) -> None:
         if self.recording:
             messagebox.showinfo(
@@ -2452,15 +2918,23 @@ class MacroEditorApp:
         ttk.Button(buttons, text="Bind Selected", command=bind).pack(side="right")
         refresh()
 
-    def capture_click(self, block: MacroBlock) -> None:
+    def capture_click(
+        self, block: MacroBlock, x_key: str = "x", y_key: str = "y"
+    ) -> None:
         self.apply_block_properties()
-        self._capture(block, include_pixel=False)
+        self._capture(block, include_pixel=False, x_key=x_key, y_key=y_key)
 
     def capture_pixel(self, block: MacroBlock) -> None:
         self.apply_block_properties()
         self._capture(block, include_pixel=True)
 
-    def _capture(self, block: MacroBlock, include_pixel: bool) -> None:
+    def _capture(
+        self,
+        block: MacroBlock,
+        include_pixel: bool,
+        x_key: str = "x",
+        y_key: str = "y",
+    ) -> None:
         if not self.macro.target_window:
             messagebox.showinfo("No Target", "Bind a target window before capturing.")
             return
@@ -2475,8 +2949,8 @@ class MacroEditorApp:
                     self.macro.expected_window_size,
                     timeout_seconds=15,
                 )
-                block.params["x"] = x
-                block.params["y"] = y
+                block.params[x_key] = x
+                block.params[y_key] = y
                 message = f"Captured x={x}, y={y}"
                 if include_pixel:
                     target = self.window_manager.require_ready(

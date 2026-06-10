@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
@@ -156,6 +157,29 @@ BLOCK_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "run_macro": {
         "macro_path": "",
     },
+    "classify_map_run": {
+        "x1": 0,
+        "y1": 0,
+        "x2": 160,
+        "y2": 100,
+        "reference_x1": 0,
+        "reference_y1": 0,
+        "reference_x2": 240,
+        "reference_y2": 160,
+        "reference_folder": "references/maps/expert",
+        "map_macro_mapping": {},
+        "click_before_run": True,
+        "map_click_x": 0,
+        "map_click_y": 0,
+        "movement_duration_ms": 150,
+        "post_click_delay_ms": 500,
+        "minimum_best_score": 0.75,
+        "minimum_score_margin": 0.05,
+        "enable_multi_scale": True,
+        "scale_min": 0.90,
+        "scale_max": 1.10,
+        "scale_step": 0.05,
+    },
     "stop": {},
 }
 
@@ -176,6 +200,7 @@ BLOCK_LABELS: Dict[str, str] = {
     "label": "Label",
     "goto": "Goto",
     "run_macro": "Run Saved Macro",
+    "classify_map_run": "Classify Map And Run Macro",
     "stop": "Stop Macro",
 }
 
@@ -201,7 +226,7 @@ class MacroBlock:
         return cls(
             type=block_type,
             name=BLOCK_LABELS.get(block_type, block_type),
-            params=dict(BLOCK_DEFAULTS[block_type]),
+            params=copy.deepcopy(BLOCK_DEFAULTS[block_type]),
         )
 
     @classmethod
@@ -210,7 +235,7 @@ class MacroBlock:
         incoming_params = dict(data.get("params") or {})
         if block_type in {"wait_region", "if_region"}:
             incoming_params = _migrate_region_hsv_params(incoming_params)
-        params = dict(BLOCK_DEFAULTS.get(block_type, {}))
+        params = copy.deepcopy(BLOCK_DEFAULTS.get(block_type, {}))
         params.update(incoming_params)
         return cls(
             type=block_type,
@@ -230,7 +255,7 @@ class MacroBlock:
             "type": self.type,
             "name": self.name,
             "note": self.note,
-            "params": dict(self.params),
+            "params": copy.deepcopy(self.params),
         }
         if self.children:
             data["children"] = [child.to_dict() for child in self.children]
@@ -243,7 +268,7 @@ class MacroBlock:
             type=self.type,
             name=self.name,
             note=self.note,
-            params=dict(self.params),
+            params=copy.deepcopy(self.params),
             children=[child.clone() for child in self.children],
             else_children=[child.clone() for child in self.else_children],
         )
@@ -399,6 +424,16 @@ def block_summary(block: MacroBlock) -> str:
         return f"target={normalize_label_name(p.get('target_label')) or '<empty>'}"
     if block.type == "run_macro":
         return f"macro={str(p.get('macro_path', '') or '<not selected>')}"
+    if block.type == "classify_map_run":
+        left, top, right, bottom = normalize_region(
+            p.get("x1", 0), p.get("y1", 0), p.get("x2", 0), p.get("y2", 0)
+        )
+        mapping = p.get("map_macro_mapping")
+        mapping_count = len(mapping) if isinstance(mapping, dict) else 0
+        return (
+            f"patch=({left},{top})-({right},{bottom}), "
+            f"refs={p.get('reference_folder', '')}, mappings={mapping_count}"
+        )
     if block.type == "stop":
         return "stop execution"
     return ""

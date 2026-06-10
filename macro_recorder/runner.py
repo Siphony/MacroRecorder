@@ -5,6 +5,11 @@ import time
 from typing import Callable, Iterable, Optional
 
 from .change_detection import RegionChangeResult, compare_captured_frames
+from .map_classification import (
+    MapClassificationError,
+    classify_map_patch,
+    format_classification_log,
+)
 from .models import (
     Macro,
     MacroBlock,
@@ -294,6 +299,10 @@ class MacroRunner:
 
         if block.type == "run_macro":
             self._run_saved_macro(macro, block)
+            return
+
+        if block.type == "classify_map_run":
+            self._classify_map_and_run_macro(macro, block)
             return
 
         if block.type == "stop":
@@ -784,36 +793,9 @@ class MacroRunner:
 
     def _run_saved_macro(self, parent_macro: Macro, block: MacroBlock) -> None:
         reference = str(block.params.get("macro_path", "") or "").strip()
-        if not reference:
-            raise AutomationError("Run Saved Macro has no referenced macro file.")
-        path = self.storage.resolve_reference(reference)
-        if not path.is_file():
-            raise AutomationError(
-                f"Referenced macro file not found: {reference}"
-            )
-        try:
-            child = self.storage.load(path)
-        except Exception as exc:
-            raise AutomationError(
-                f"Failed to load referenced macro '{reference}': {exc}"
-            ) from exc
-
-        identity = self.storage.reference_identity(path)
-        child_name = child.name or path.stem
-        active_identities = {item[0] for item in self._call_stack}
-        if identity in active_identities:
-            stack_names = [item[1] for item in self._call_stack] + [child_name]
-            raise AutomationError(
-                "Recursive macro call detected. Call stack: "
-                + " -> ".join(stack_names)
-            )
-
-        validation_errors = control_flow_errors(child)
-        if validation_errors:
-            raise AutomationError(
-                f"Child macro '{child_name}' has invalid Label/Goto control flow: "
-                + " ".join(validation_errors)
-            )
+        child, path, identity, child_name = self._validate_saved_macro_reference(
+            reference
+        )
         if (
             child.expected_window_size
             and self._active_expected_window_size
@@ -849,6 +831,126 @@ class MacroRunner:
         finally:
             self._call_stack.pop()
         self.log(f"[RunSavedMacro] Finished macro: {child_name}")
+
+    def _classify_map_and_run_macro(self, macro: Macro, block: MacroBlock) -> None:
+        params = block.params
+        target = self._target(macro)
+        region = normalize_region(
+            params.get("x1", 0),
+            params.get("y1", 0),
+            params.get("x2", 0),
+            params.get("y2", 0),
+        )
+        capture = self.screen_analysis.capture_target_region(target, *region)
+        reference_value = str(params.get("reference_folder", "") or "").strip()
+        if not reference_value:
+            raise AutomationError("Classify Map And Run Macro has no reference folder.")
+        reference_folder = self.storage.resolve_reference(reference_value)
+        try:
+            result = classify_map_patch(
+                capture.bgr,
+                reference_folder,
+                enable_multi_scale=_as_bool(params.get("enable_multi_scale", True)),
+                scale_min=float(params.get("scale_min", 0.90)),
+                scale_max=float(params.get("scale_max", 1.10)),
+                scale_step=float(params.get("scale_step", 0.05)),
+                stop_check=self._check_stop,
+            )
+        except MapClassificationError as exc:
+            self._save_debug_capture(capture, f"{macro.name}_classify_map_runtime", "error")
+            raise AutomationError(f"Map classification failed: {exc}") from exc
+
+        minimum_best = float(params.get("minimum_best_score", 0.75))
+        minimum_margin = float(params.get("minimum_score_margin", 0.05))
+        self.log(
+            format_classification_log(
+                result,
+                heading="ClassifyMapAndRunMacro",
+                reference_folder=reference_folder,
+                region=region,
+                minimum_best_score=minimum_best,
+                minimum_margin=minimum_margin,
+            )
+        )
+        best_id = result.best.map_id if result.best else "unknown"
+        confidence_passed = result.passes(minimum_best, minimum_margin)
+        self._save_debug_capture(
+            capture,
+            f"{macro.name}_classify_map_runtime",
+            best_id if confidence_passed else f"low_confidence_{best_id}",
+        )
+        if not confidence_passed:
+            raise AutomationError(
+                "Map classification confidence was too low. "
+                f"Best={result.best.score:.4f} "
+                f"margin={result.margin:.4f}; no map was clicked or run."
+            )
+
+        mapping = params.get("map_macro_mapping") or {}
+        if not isinstance(mapping, dict):
+            raise AutomationError("Map-to-macro mapping must be a JSON object.")
+        mapped_macro = _mapping_value(mapping, best_id)
+        if not mapped_macro:
+            raise AutomationError(
+                f"Detected map '{best_id}' has no mapped saved macro."
+            )
+        self._validate_saved_macro_reference(str(mapped_macro))
+        self.log(
+            f"[ClassifyMapAndRunMacro] Detected map: {best_id}; "
+            f"mapped macro: {mapped_macro}"
+        )
+
+        if _as_bool(params.get("click_before_run", True)):
+            x = int(params.get("map_click_x", 0))
+            y = int(params.get("map_click_y", 0))
+            duration_ms = max(0, int(params.get("movement_duration_ms", 150) or 0))
+            self.log(
+                f"[ClassifyMapAndRunMacro] Moving to map slot ({x}, {y}) "
+                f"over {duration_ms} ms, then left click"
+            )
+            self.input_controller.move_mouse(
+                target, x, y, duration_ms, stop_check=self._check_stop
+            )
+            self._check_stop()
+            self.input_controller.click(target, x, y, "left", 1)
+            self._responsive_sleep(
+                max(0, int(params.get("post_click_delay_ms", 500) or 0))
+            )
+
+        call = MacroBlock.create("run_macro")
+        call.params["macro_path"] = str(mapped_macro)
+        self._run_saved_macro(macro, call)
+
+    def _validate_saved_macro_reference(self, reference: str):
+        reference = str(reference or "").strip()
+        if not reference:
+            raise AutomationError("Run Saved Macro has no referenced macro file.")
+        path = self.storage.resolve_reference(reference)
+        if not path.is_file():
+            raise AutomationError(f"Referenced macro file not found: {reference}")
+        try:
+            child = self.storage.load(path)
+        except Exception as exc:
+            raise AutomationError(
+                f"Failed to load referenced macro '{reference}': {exc}"
+            ) from exc
+
+        identity = self.storage.reference_identity(path)
+        child_name = child.name or path.stem
+        active_identities = {item[0] for item in self._call_stack}
+        if identity in active_identities:
+            stack_names = [item[1] for item in self._call_stack] + [child_name]
+            raise AutomationError(
+                "Recursive macro call detected. Call stack: "
+                + " -> ".join(stack_names)
+            )
+        validation_errors = control_flow_errors(child)
+        if validation_errors:
+            raise AutomationError(
+                f"Child macro '{child_name}' has invalid Label/Goto control flow: "
+                + " ".join(validation_errors)
+            )
+        return child, path, identity, child_name
 
     def _macro_identity(self, macro: Macro) -> str:
         if macro.path:
@@ -890,3 +992,20 @@ class MacroRunner:
     def _check_stop(self) -> None:
         if self.cancel_event.is_set():
             raise MacroStopped()
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mapping_value(mapping, map_id: str) -> Optional[str]:
+    exact = mapping.get(map_id)
+    if exact:
+        return str(exact)
+    wanted = str(map_id).casefold()
+    for key, value in mapping.items():
+        if str(key).casefold() == wanted and value:
+            return str(value)
+    return None

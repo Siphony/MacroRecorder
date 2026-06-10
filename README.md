@@ -211,6 +211,16 @@ The app opens at up to `1600x900`, constrained to the available screen size. Mac
 
 Right-click a block and choose **Run From Here** to start execution from that block. For nested blocks, the app runs the selected block and subsequent sibling blocks in the same sequence.
 
+## BTD6 Map Preview Classification
+
+**Classify Map And Run Macro** captures a small runtime patch from the bound target client area, searches that patch inside every larger PNG/JPG reference image in the configured reference folder, and ranks map IDs derived from reference filenames. Matching uses OpenCV `TM_CCOEFF_NORMED`; scores range from `-1` to `1`, with `1` indicating an essentially identical patch. Optional multi-scale matching resizes the runtime patch across the configured scale range before searching.
+
+The block keeps separate **Runtime Patch** and **Reference Capture** regions. Use the reference corner controls over a large clean map preview, then **Capture Reference Image** and enter a map ID. References are saved as `<map_id>.png`, normally under `references/maps/expert/`. Existing reference files are not overwritten automatically.
+
+Use **Probe Classification Now** before trusting dispatch. It captures and ranks references, logs the top three scores, locations, scales, confidence margin, and threshold result, but never clicks or runs a macro. When debug captures are enabled, the exact runtime patch is saved under `debug_captures/`.
+
+Execution requires both **Minimum Best Score** and **Minimum Score Margin** to pass. Low confidence stops before clicking. Configure map-to-macro paths through **Edit Map Macro Mapping**. On a confident mapped result, the block can optionally move/click the map slot, wait the configured delay, then call the mapped macro through the existing Run Saved Macro execution path.
+
 ## Emergency Stops
 
 The app has several stop paths while a macro is running:
