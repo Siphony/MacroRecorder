@@ -193,6 +193,12 @@ Recording and macro execution are mutually exclusive. Starting a run while recor
 
 v1.9 does not record mouse movement, dragging, click counts, key combinations, or pauses as Wait blocks. Repeated clicks or keys become separate readable blocks, and waits can be added manually afterward.
 
+## Convert Recorded Clicks
+
+The Saved Macros panel includes a **Utilities** section with **Convert Clicks to Move+Click**. After confirmation, the current macro is saved, backed up under `macro_backups/v1.11_click_to_move_click/`, recursively converted, saved again, and reloaded. Only plain Click blocks are changed; existing Move And Click and Click Until Region Changes blocks are untouched. Converted blocks preserve their existing coordinates, button/count, delay, name, note, ID, custom settings, and nesting while adding a `150` ms movement duration.
+
+The recorder intentionally continues to create ordinary Click blocks. This utility is current-macro only and can be used after recording. If the converted save fails, the app attempts to restore the original saved JSON from the timestamped backup.
+
 ## Saved Macro Ordering And Save Safety
 
 The Saved Macros panel includes **Move Up** and **Move Down** controls. Manual order is stored separately in `macros/macro_order.json`; macro JSON files are not modified when the list is reordered. New or previously unlisted macro files appear after the ordered entries. Missing order entries are ignored, and missing/corrupt metadata safely falls back to alphabetical discovery.

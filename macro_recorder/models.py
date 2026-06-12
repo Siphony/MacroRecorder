@@ -317,6 +317,20 @@ def iter_blocks(blocks: Iterable[MacroBlock]) -> Iterable[MacroBlock]:
         yield from iter_blocks(block.else_children)
 
 
+def convert_clicks_to_move_and_click(
+    macro: Macro, movement_duration_ms: int = 150
+) -> int:
+    converted = 0
+    duration = max(0, int(movement_duration_ms))
+    for block in macro.all_blocks():
+        if block.type != "click":
+            continue
+        block.type = "move_and_click"
+        block.params["movement_duration_ms"] = duration
+        converted += 1
+    return converted
+
+
 def find_block(
     blocks: List[MacroBlock], block_id: str
 ) -> Optional[Tuple[MacroBlock, List[MacroBlock], Optional[MacroBlock], str]]:

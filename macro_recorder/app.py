@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ctypes
 import json
+import shutil
 import threading
 import tkinter as tk
 from ctypes import wintypes
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +34,7 @@ from .models import (
     color_to_hex,
     color_to_rgb_text,
     control_flow_errors,
+    convert_clicks_to_move_and_click,
     find_block,
     normalize_label_name,
     normalize_sampling_mode,
@@ -498,6 +501,13 @@ class MacroEditorApp:
         ttk.Button(order_row, text="Move Down", command=lambda: self.move_saved_macro(1)).pack(
             side="left", padx=(6, 0)
         )
+        utilities = ttk.LabelFrame(self.left_panel, text="Utilities", padding=6)
+        utilities.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            utilities,
+            text="Convert Clicks to Move+Click",
+            command=self.convert_current_macro_clicks,
+        ).pack(fill="x")
 
     def _build_middle_panel(self) -> None:
         header = ttk.Frame(self.middle_panel)
@@ -2656,6 +2666,173 @@ class MacroEditorApp:
         self.refresh_all()
         self.macro_list.selection_clear(0, tk.END)
         self._mark_clean()
+
+    def convert_current_macro_clicks(self) -> None:
+        if not self.macro:
+            messagebox.showinfo("No Macro", "Open a macro before converting Click blocks.")
+            return
+        if self.recording:
+            messagebox.showinfo(
+                "Recording Active", "Stop recording before converting Click blocks."
+            )
+            return
+        if self.runner.is_running or self.running:
+            messagebox.showinfo(
+                "Macro Running", "Stop the running macro before converting Click blocks."
+            )
+            return
+        if not self._confirm_click_conversion():
+            return
+        if not self._save_for_transition():
+            self.threadsafe_log("Click conversion cancelled because the macro was not saved.")
+            return
+
+        plain_click_count = sum(
+            1 for block in self.macro.all_blocks() if block.type == "click"
+        )
+        if plain_click_count == 0:
+            message = "No plain Click blocks found to convert."
+            self.threadsafe_log(message)
+            self.status_var.set(message)
+            messagebox.showinfo("Convert Click Blocks", message)
+            return
+
+        source_path = Path(str(self.macro.path or "")).resolve()
+        try:
+            backup_path = self._create_click_conversion_backup(source_path)
+            original_macro = self.storage.load(source_path)
+        except Exception as exc:
+            self.threadsafe_log(f"Click conversion backup failed: {exc}")
+            messagebox.showerror(
+                "Click Conversion Backup Failed",
+                f"The macro was not modified.\n\n{exc}",
+            )
+            return
+
+        try:
+            converted = convert_clicks_to_move_and_click(self.macro, 150)
+            if converted != plain_click_count:
+                raise RuntimeError(
+                    f"Expected to convert {plain_click_count} Click blocks, "
+                    f"but converted {converted}."
+                )
+        except Exception as exc:
+            self.macro = original_macro
+            self.refresh_all()
+            self._mark_clean()
+            self.threadsafe_log(f"Click conversion failed before save: {exc}")
+            messagebox.showerror(
+                "Click Conversion Failed",
+                f"The original macro remains loaded.\n\n{exc}",
+            )
+            return
+
+        if not self.save_macro():
+            restore_error = self._restore_click_conversion_backup(
+                backup_path, source_path, original_macro
+            )
+            message = "The converted macro could not be saved. The original was restored."
+            if restore_error:
+                message += f"\n\nRestore warning: {restore_error}"
+            self.threadsafe_log(message)
+            messagebox.showerror("Click Conversion Failed", message)
+            return
+
+        try:
+            self.macro = self.storage.load(source_path)
+            self.refresh_all()
+            self.refresh_macro_list(source_path)
+            self._mark_clean()
+        except Exception as exc:
+            restore_error = self._restore_click_conversion_backup(
+                backup_path, source_path, original_macro
+            )
+            message = f"Converted macro reload failed: {exc}"
+            if restore_error:
+                message += f" Restore warning: {restore_error}"
+            self.threadsafe_log(message)
+            messagebox.showerror("Click Conversion Failed", message)
+            return
+
+        message = (
+            f"Converted {converted} Click blocks to Move And Click blocks in "
+            f"{self.macro.name}. Backup saved to {backup_path}"
+        )
+        self.threadsafe_log(message)
+        self.status_var.set(f"Converted {converted} Click blocks to Move And Click.")
+
+    def _confirm_click_conversion(self) -> bool:
+        decision = {"convert": False}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Convert Click Blocks")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text=(
+                "Convert all plain Click blocks in the current macro to "
+                "Move And Click blocks?\n\n"
+                "This will preserve click coordinates and button settings, "
+                "and add a 150ms movement duration."
+            ),
+            justify="left",
+            wraplength=430,
+        ).pack(fill="x", padx=14, pady=(14, 10))
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=14, pady=(0, 14))
+
+        def close(convert: bool) -> None:
+            decision["convert"] = convert
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Cancel", command=lambda: close(False)).pack(
+            side="right"
+        )
+        ttk.Button(buttons, text="Convert", command=lambda: close(True)).pack(
+            side="right", padx=(0, 7)
+        )
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close(False))
+        dialog.bind("<Escape>", lambda _event: close(False))
+        dialog.wait_window()
+        return decision["convert"]
+
+    def _create_click_conversion_backup(self, source_path: Path) -> Path:
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Saved macro file was not found: {source_path}")
+        backup_dir = (
+            self.storage.project_dir
+            / "macro_backups"
+            / "v1.11_click_to_move_click"
+        )
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+        backup_path = backup_dir / f"{source_path.stem}_{timestamp}.json"
+        counter = 2
+        while backup_path.exists():
+            backup_path = backup_dir / (
+                f"{source_path.stem}_{timestamp}_{counter}.json"
+            )
+            counter += 1
+        shutil.copy2(source_path, backup_path)
+        return backup_path.resolve()
+
+    def _restore_click_conversion_backup(
+        self, backup_path: Path, source_path: Path, original_macro: Macro
+    ) -> Optional[str]:
+        try:
+            shutil.copy2(backup_path, source_path)
+            self.macro = self.storage.load(source_path)
+            self.refresh_all()
+            self.refresh_macro_list(source_path)
+            self._mark_clean()
+            return None
+        except Exception as exc:
+            self.macro = original_macro
+            self.refresh_all()
+            return str(exc)
 
     def save_macro(self) -> bool:
         try:
